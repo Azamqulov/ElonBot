@@ -1,17 +1,24 @@
 import os
+from datetime import datetime, timedelta
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from src.bot.states.job_states import JobApplicationFSM
 from src.bot.keyboards.inline_keyboards import (
+    get_tariff_keyboard,
+    get_payment_keyboard,
+    get_receipt_sent_keyboard,
     get_categories_keyboard,
     get_salary_keyboard,
     get_skip_keyboard,
     get_preview_keyboard,
     get_admin_moderation_keyboard,
+    get_admin_payment_keyboard,
+    TARIFF_PRICES,
+    PAYMENT_DETAILS,
 )
 from src.bot.keyboards.reply_keyboards import get_main_menu_keyboard
-from src.database.models import User, JobStatus
+from src.database.models import User, JobStatus, TariffType, PaymentStatus
 from src.database.repositories import CategoryRepository, JobRequestRepository, UserRepository
 from src.services.post_generator import PostGenerator
 from src.services.image_generator import image_generator
@@ -19,22 +26,318 @@ from src.bot.config import settings
 
 router = Router()
 
+# Tarif imtiyozlari matni
+TARIFF_INFO = {
+    "start": (
+        "🟢 <b>START tarifi — 20 000 so'm</b>\n\n"
+        "✅ 1 ta kanalga joylash\n"
+        "✅ 7 kun aktiv\n"
+        "✅ Standart e'lon ko'rinishi\n"
+        "✅ Admin tasdiqlashi"
+    ),
+    "pro": (
+        "🔵 <b>PRO tarifi — 50 000 so'm</b>\n\n"
+        "✅ Barcha kanallarga joylash\n"
+        "✅ 30 kun aktiv\n"
+        "⚡ E'lon ustida <b>TEZKOR</b> belgisi\n"
+        "✅ Admin tasdiqlashi\n"
+        "🔝 Ustunlik — ko'proq ko'ruvchi"
+    ),
+}
+
+
+# ─────────────────────────────────────────────
+# 0-QADAM: Tarif tanlash
+# ─────────────────────────────────────────────
 
 @router.message(F.text == "🆕 Yangi vakansiya berish")
-async def start_job_application(message: Message, state: FSMContext, cat_repo: CategoryRepository):
+async def start_job_application(message: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(JobApplicationFSM.tariff)
+    await message.answer(
+        "📋 <b>Tarif rejasini tanlang:</b>\n\n"
+        f"{TARIFF_INFO['start']}\n\n"
+        "─────────────────\n\n"
+        f"{TARIFF_INFO['pro']}",
+        parse_mode="HTML",
+        reply_markup=get_tariff_keyboard(),
+    )
+
+
+@router.callback_query(JobApplicationFSM.tariff, F.data.in_({"tariff_start", "tariff_pro"}))
+async def step_tariff_selected(call: CallbackQuery, state: FSMContext):
+    tariff = call.data.replace("tariff_", "")  # "start" yoki "pro"
+    price = TARIFF_PRICES[tariff]
+    await state.update_data(tariff=tariff, price=price)
+    await state.set_state(JobApplicationFSM.payment_method)
+
+    tariff_label = "🟢 START" if tariff == "start" else "🔵 PRO"
+    await call.message.edit_text(
+        f"Siz <b>{tariff_label} — {price:,} so'm</b> tarifini tanladingiz.\n\n"
+        "💳 <b>To'lov usulini tanlang:</b>",
+        parse_mode="HTML",
+        reply_markup=get_payment_keyboard(),
+    )
+    await call.answer()
+
+
+@router.callback_query(JobApplicationFSM.tariff, F.data == "back_to_tariff")
+@router.callback_query(JobApplicationFSM.payment_method, F.data == "back_to_tariff")
+async def step_back_to_tariff(call: CallbackQuery, state: FSMContext):
+    await state.set_state(JobApplicationFSM.tariff)
+    await call.message.edit_text(
+        "📋 <b>Tarif rejasini tanlang:</b>\n\n"
+        f"{TARIFF_INFO['start']}\n\n"
+        "─────────────────\n\n"
+        f"{TARIFF_INFO['pro']}",
+        parse_mode="HTML",
+        reply_markup=get_tariff_keyboard(),
+    )
+    await call.answer()
+
+
+# ─────────────────────────────────────────────
+# 1-QADAM: To'lov usuli tanlash
+# ─────────────────────────────────────────────
+
+@router.callback_query(JobApplicationFSM.payment_method, F.data.in_({"pay_payme", "pay_click"}))
+async def step_payment_method_selected(call: CallbackQuery, state: FSMContext):
+    provider = call.data.replace("pay_", "")  # "payme" yoki "click"
+    data = await state.get_data()
+    tariff = data.get("tariff", "start")
+    price = data.get("price", TARIFF_PRICES[tariff])
+
+    await state.update_data(payment_provider=provider)
+    await state.set_state(JobApplicationFSM.waiting_receipt)
+
+    details = PAYMENT_DETAILS[provider]
+    tariff_label = "🟢 START" if tariff == "start" else "🔵 PRO"
+
+    await call.message.edit_text(
+        f"💳 <b>{details['name']} orqali to'lov</b>\n\n"
+        f"📦 Tarif: <b>{tariff_label}</b>\n"
+        f"💰 Summa: <b>{price:,} so'm</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏦 Karta raqami:\n<code>{details['card']}</code>\n"
+        f"👤 Egasi: <b>{details['owner']}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📸 To'lovni amalga oshiring va <b>chek (screenshot)</b> rasmini shu chatga yuboring.\n\n"
+        "<i>Chekni yuborganingizdan so'ng admin tekshirib tasdiqlaydi.</i>",
+        parse_mode="HTML",
+        reply_markup=get_receipt_sent_keyboard(),
+    )
+    await call.answer()
+
+
+@router.callback_query(JobApplicationFSM.waiting_receipt, F.data == "back_to_payment")
+async def step_back_to_payment(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    tariff = data.get("tariff", "start")
+    price = data.get("price", TARIFF_PRICES[tariff])
+    tariff_label = "🟢 START" if tariff == "start" else "🔵 PRO"
+    await state.set_state(JobApplicationFSM.payment_method)
+    await call.message.edit_text(
+        f"Siz <b>{tariff_label} — {price:,} so'm</b> tarifini tanladingiz.\n\n"
+        "💳 <b>To'lov usulini tanlang:</b>",
+        parse_mode="HTML",
+        reply_markup=get_payment_keyboard(),
+    )
+    await call.answer()
+
+
+# ─────────────────────────────────────────────
+# 2-QADAM: Chek (screenshot) qabul qilish
+# ─────────────────────────────────────────────
+
+@router.message(JobApplicationFSM.waiting_receipt, F.photo)
+async def step_receipt_photo_received(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    db_user: User,
+    job_repo: JobRequestRepository,
+    user_repo: UserRepository,
+):
+    data = await state.get_data()
+    tariff = data.get("tariff", "start")
+    provider = data.get("payment_provider", "payme")
+    price = data.get("price", TARIFF_PRICES[tariff])
+
+    # Chek fayl ID ni saqlash
+    receipt_file_id = message.photo[-1].file_id
+    await state.update_data(payment_receipt=receipt_file_id)
+
+    # Adminlarga chek yuborish
+    admins = await user_repo.get_all_admins()
+    tariff_label = "🟢 START" if tariff == "start" else "🔵 PRO"
+    provider_label = "Payme" if provider == "payme" else "Click"
+
+    # Vaqtinchalik pending job yaratish (to'lov tasdiqlanguncha)
+    job = await job_repo.create_pending_payment(
+        user_id=db_user.id,
+        tariff=tariff,
+        payment_provider=provider,
+        payment_receipt=receipt_file_id,
+        price=price,
+    )
+    await state.update_data(pending_payment_job_id=job.id)
+
+    admin_text = (
+        f"💰 <b>YANGI TO'LOV CHEKI!</b>\n\n"
+        f"👤 Foydalanuvchi: {db_user.full_name} (@{db_user.username or 'yo_q'})\n"
+        f"📦 Tarif: <b>{tariff_label}</b>\n"
+        f"💳 To'lov usuli: <b>{provider_label}</b>\n"
+        f"💰 Summa: <b>{price:,} so'm</b>\n"
+        f"🆔 So'rov ID: #{job.id}"
+    )
+
+    for admin in admins:
+        try:
+            await bot.send_photo(
+                chat_id=admin.tg_id,
+                photo=receipt_file_id,
+                caption=admin_text,
+                parse_mode="HTML",
+                reply_markup=get_admin_payment_keyboard(job.id),
+            )
+        except Exception:
+            continue
+
+    await message.answer(
+        "✅ <b>Chekingiz qabul qilindi!</b>\n\n"
+        "⏳ Admin to'lovni tekshirmoqda...\n"
+        "Tasdiqlangach, vakansiya ma'lumotlarini kiritishga o'tasiz.\n\n"
+        "<i>Odatda 5-15 daqiqa ichida tasdiqlanadi.</i>",
+        parse_mode="HTML",
+    )
+    await state.set_state(JobApplicationFSM.waiting_receipt)  # Tasdiqlash kutish
+
+
+# ─────────────────────────────────────────────
+# ADMIN: To'lovni tasdiqlash/rad etish
+# ─────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("pay_confirm_"))
+async def cb_admin_payment_confirm(
+    call: CallbackQuery,
+    bot: Bot,
+    db_user: User,
+    job_repo: JobRequestRepository,
+    state: FSMContext,
+):
+    if not db_user.is_admin():
+        await call.answer("Sizda ruxsat yo'q!", show_alert=True)
+        return
+
+    job_id = int(call.data.replace("pay_confirm_", ""))
+    job = await job_repo.get_by_id(job_id)
+    if not job:
+        await call.answer("So'rov topilmadi!", show_alert=True)
+        return
+
+    # To'lovni tasdiqlash
+    await job_repo.confirm_payment(job_id=job_id)
+
+    await call.message.edit_reply_markup(reply_markup=None)
+    await call.message.reply("✅ <b>To'lov tasdiqlandi!</b>", parse_mode="HTML")
+    await call.answer()
+
+    # Foydalanuvchiga xabar yuborish — vakansiya ma'lumotlarini kiritsin
+    tariff_label = "🟢 START" if job.tariff == "start" else "🔵 PRO"
+    try:
+        await bot.send_message(
+            chat_id=job.user.tg_id,
+            text=(
+                f"🎉 <b>To'lovingiz tasdiqlandi!</b>\n\n"
+                f"📦 Tarif: <b>{tariff_label}</b>\n\n"
+                "Endi vakansiya ma'lumotlarini kiritishingiz mumkin.\n"
+                "Pastdagi tugmani bosing:"
+            ),
+            parse_mode="HTML",
+            reply_markup=get_fill_vacancy_keyboard(),
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("pay_reject_"))
+async def cb_admin_payment_reject(
+    call: CallbackQuery,
+    bot: Bot,
+    db_user: User,
+    job_repo: JobRequestRepository,
+):
+    if not db_user.is_admin():
+        await call.answer("Sizda ruxsat yo'q!", show_alert=True)
+        return
+
+    job_id = int(call.data.replace("pay_reject_", ""))
+    job = await job_repo.get_by_id(job_id)
+    if not job:
+        await call.answer("So'rov topilmadi!", show_alert=True)
+        return
+
+    await job_repo.reject_payment(job_id=job_id)
+    await call.message.edit_reply_markup(reply_markup=None)
+    await call.message.reply("❌ <b>To'lov rad etildi.</b>", parse_mode="HTML")
+    await call.answer()
+
+    try:
+        await bot.send_message(
+            chat_id=job.user.tg_id,
+            text=(
+                "❌ <b>To'lovingiz tasdiqlanmadi.</b>\n\n"
+                "Iltimos, to'lov chekini qayta tekshiring va bot adminga murojaat qiling."
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────
+# To'lov tasdiqlangach — Ma'lumot to'ldirish bosqichi
+# ─────────────────────────────────────────────
+
+def get_fill_vacancy_keyboard():
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📝 Vakansiya ma'lumotlarini kiritish", callback_data="start_filling")]
+        ]
+    )
+
+
+@router.callback_query(F.data == "start_filling")
+async def cb_start_filling(call: CallbackQuery, state: FSMContext, cat_repo: CategoryRepository, db_user: User, job_repo: JobRequestRepository):
+    # Foydalanuvchining to'langan, lekin hali to'ldirilmagan so'rovini topish
+    job = await job_repo.get_paid_unfilled_job(user_id=db_user.id)
+    if not job:
+        await call.answer("Faol to'lov topilmadi. Iltimos qaytadan boshlang.", show_alert=True)
+        return
+
     categories = await cat_repo.get_all_active()
     if not categories:
-        await message.answer("Hozircha tizimda faol kategoriyalar mavjud emas. Iltimos adminga murojaat qiling.")
+        await call.message.answer("Hozircha tizimda faol kategoriyalar mavjud emas. Iltimos adminga murojaat qiling.")
         return
 
     await state.clear()
+    await state.update_data(
+        tariff=job.tariff,
+        paid_job_id=job.id,
+    )
     await state.set_state(JobApplicationFSM.category)
-    await message.answer(
+    await call.message.answer(
         "1-qadam: <b>Ish turi / Kategoriya</b>ni tanlang:",
         parse_mode="HTML",
         reply_markup=get_categories_keyboard(categories),
     )
+    await call.answer()
 
+
+# ─────────────────────────────────────────────
+# QOLGAN FSM QADAMLAR (o'zgarishsiz)
+# ─────────────────────────────────────────────
 
 @router.callback_query(JobApplicationFSM.category, F.data.startswith("cat_"))
 async def step_category_selected(call: CallbackQuery, state: FSMContext, cat_repo: CategoryRepository):
@@ -176,7 +479,6 @@ async def step_contact_entered(message: Message, state: FSMContext, bot: Bot):
     contact_info = message.text.strip()
     await state.update_data(contact=contact_info)
 
-    # Telegram user aniqlash
     tg_user = None
     if "@" in contact_info:
         for word in contact_info.split():
@@ -190,7 +492,6 @@ async def step_contact_entered(message: Message, state: FSMContext, bot: Bot):
 
     data = await state.get_data()
 
-    # Post matnini generatsiya qilish
     post_text = PostGenerator.generate_job_post(
         position=data["position"],
         company=data["company"],
@@ -201,28 +502,31 @@ async def step_contact_entered(message: Message, state: FSMContext, bot: Bot):
         work_schedule=data.get("work_schedule"),
         telegram_user=data.get("telegram_user"),
         channel_username=settings.DEFAULT_CHANNEL_ID,
+        is_pro=(data.get("tariff") == "pro"),
     )
 
-    # Rasm kartasini generatsiya qilish
     card_path = image_generator.generate_job_card(
         position=data["position"],
         company=data["company"],
         salary=data["salary"],
         category_name=data.get("category_name", "Vakansiya"),
         channel_watermark=settings.WATERMARK_TEXT,
+        is_pro=(data.get("tariff") == "pro"),
     )
 
     await state.update_data(post_text=post_text, image_path=card_path)
     await state.set_state(JobApplicationFSM.preview)
 
-    # Preview taqdim etish
+    tariff = data.get("tariff", "start")
+    tariff_label = "🟢 START" if tariff == "start" else "🔵 PRO"
+
     preview_caption = (
-        "🔍 <b>E'LONINGIZ KO'RINISHI (PREVIEW):</b>\n\n"
+        f"🔍 <b>E'LONINGIZ KO'RINISHI (PREVIEW):</b>\n"
+        f"📦 Tarif: <b>{tariff_label}</b>\n\n"
         f"{post_text}\n\n"
         "Barcha ma'lumotlar to'g'riligini tekshiring va quyidagi amallardan birini tanlang:"
     )
 
-    # Telegram caption chegarasi 1024 belgi
     if len(preview_caption) <= 1024:
         await message.answer_photo(
             photo=FSInputFile(card_path),
@@ -231,7 +535,6 @@ async def step_contact_entered(message: Message, state: FSMContext, bot: Bot):
             reply_markup=get_preview_keyboard(),
         )
     else:
-        # Alohida rasm va alohida matn
         await message.answer_photo(photo=FSInputFile(card_path))
         await message.answer(
             preview_caption,
@@ -243,8 +546,14 @@ async def step_contact_entered(message: Message, state: FSMContext, bot: Bot):
 @router.callback_query(JobApplicationFSM.preview, F.data == "restart_job")
 async def cb_restart_job(call: CallbackQuery, state: FSMContext, cat_repo: CategoryRepository):
     categories = await cat_repo.get_all_active()
+    data = await state.get_data()
+    tariff = data.get("tariff", "start")
+    paid_job_id = data.get("paid_job_id")
+
     await state.clear()
     await state.set_state(JobApplicationFSM.category)
+    await state.update_data(tariff=tariff, paid_job_id=paid_job_id)
+
     await call.message.answer(
         "Keling, qaytadan boshlaymiz. <b>Kategoriya</b>ni tanlang:",
         parse_mode="HTML",
@@ -267,9 +576,16 @@ async def cb_submit_job(
         await call.answer("Ma'lumotlar eskirgan, iltimos qaytadan boshlang.", show_alert=True)
         return
 
-    # Bazada so'rov yaratish
-    job = await job_repo.create(
-        user_id=db_user.id,
+    tariff = data.get("tariff", "start")
+    paid_job_id = data.get("paid_job_id")
+
+    # E'lon muddat hisoblash
+    days = 30 if tariff == "pro" else 7
+    expires_at = datetime.utcnow() + timedelta(days=days)
+
+    # Mavjud pending_payment jobni to'liq ma'lumotlar bilan yangilash
+    job = await job_repo.update_with_vacancy_data(
+        job_id=paid_job_id,
         category_id=data.get("category_id"),
         position=data["position"],
         company=data["company"],
@@ -282,6 +598,7 @@ async def cb_submit_job(
         post_text=data.get("post_text"),
         image_path=data.get("image_path"),
         status=JobStatus.PENDING.value,
+        expires_at=expires_at,
     )
 
     await state.clear()
@@ -291,19 +608,23 @@ async def cb_submit_job(
     except Exception:
         pass
 
+    tariff_label = "🟢 START" if tariff == "start" else "🔵 PRO"
     await call.message.answer(
         f"✅ <b>Vakansiya so'rovingiz qabul qilindi! (ID: #{job.id})</b>\n\n"
+        f"📦 Tarif: <b>{tariff_label}</b>\n"
+        f"⏰ Aktiv muddat: <b>{days} kun</b>\n\n"
         "Adminlarimiz tez orada e'loningizni ko'rib chiqadi va tasdiqlangach kanalga joylanadi.\n"
         "Holatni <b>'📋 Mening e'lonlarim'</b> bo'limida kuzatishingiz mumkin.",
         parse_mode="HTML",
         reply_markup=get_main_menu_keyboard(is_admin=db_user.is_admin()),
     )
 
-    # Barcha adminlarga xabar yuborish
+    # Adminlarga xabar
     admins = await user_repo.get_all_admins()
     admin_notice = (
         f"🔔 <b>YANGI VAKANSIYA SO'ROVI! (ID: #{job.id})</b>\n\n"
         f"Yuboruvchi: {db_user.full_name} (@{db_user.username or 'yo_q'})\n"
+        f"📦 Tarif: <b>{tariff_label}</b>\n"
         f"Lavozim: <b>{job.position}</b>\n"
         f"Kompaniya: <b>{job.company}</b>\n"
         f"Maosh: <b>{job.salary}</b>\n\n"

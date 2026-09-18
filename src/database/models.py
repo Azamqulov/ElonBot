@@ -31,6 +31,18 @@ class JobStatus(str, Enum):
     POSTED = "posted"
 
 
+class TariffType(str, Enum):
+    START = "start"
+    PRO = "pro"
+
+
+class PaymentStatus(str, Enum):
+    PENDING = "pending"      # To'lov kutilmoqda
+    WAITING_CONFIRM = "waiting_confirm"  # Chek yuborildi, admin tasdiqlaydi
+    PAID = "paid"            # To'langan
+    CANCELLED = "cancelled"  # Bekor qilindi
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -85,6 +97,13 @@ class JobRequest(Base):
 
     post_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     image_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # Tarif tizimi
+    tariff: Mapped[str] = mapped_column(String(20), default=TariffType.START.value, nullable=False)
+    payment_status: Mapped[str] = mapped_column(String(30), default=PaymentStatus.PENDING.value, nullable=False)
+    payment_provider: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # payme / click
+    payment_receipt: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # Chek fayl ID
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # E'lon amal qilish muddati
 
     status: Mapped[str] = mapped_column(String(20), default=JobStatus.DRAFT.value, nullable=False, index=True)
     reviewed_by: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)

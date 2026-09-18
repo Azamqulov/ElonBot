@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 from sqlalchemy import select, update, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.database.models import User, Category, JobRequest, Channel, UserRole, JobStatus
+from src.database.models import User, Category, JobRequest, Channel, UserRole, JobStatus, TariffType, PaymentStatus
 
 
 class UserRepository:
@@ -28,7 +28,6 @@ class UserRepository:
             await self.session.flush()
             created = True
         else:
-            # Yangilash agar username yoki ism o'zgargan bo'lsa
             updated = False
             if user.full_name != full_name:
                 user.full_name = full_name
@@ -93,6 +92,8 @@ class JobRequestRepository:
         post_text: Optional[str] = None,
         image_path: Optional[str] = None,
         status: str = JobStatus.DRAFT.value,
+        tariff: str = TariffType.START.value,
+        payment_status: str = PaymentStatus.PAID.value,
     ) -> JobRequest:
         job = JobRequest(
             user_id=user_id,
@@ -108,9 +109,107 @@ class JobRequestRepository:
             post_text=post_text,
             image_path=image_path,
             status=status,
+            tariff=tariff,
+            payment_status=payment_status,
             created_at=datetime.utcnow(),
         )
         self.session.add(job)
+        await self.session.flush()
+        return job
+
+    async def create_pending_payment(
+        self,
+        user_id: int,
+        tariff: str,
+        payment_provider: str,
+        payment_receipt: str,
+        price: int,
+    ) -> JobRequest:
+        """To'lov cheki yuborildi, admin tasdiqlashini kutish uchun skeletal job yaratish."""
+        job = JobRequest(
+            user_id=user_id,
+            position="—",  # Keyinroq to'ldiriladi
+            company="—",
+            requirements="—",
+            salary="—",
+            contact="—",
+            status=JobStatus.DRAFT.value,
+            tariff=tariff,
+            payment_status=PaymentStatus.WAITING_CONFIRM.value,
+            payment_provider=payment_provider,
+            payment_receipt=payment_receipt,
+            created_at=datetime.utcnow(),
+        )
+        self.session.add(job)
+        await self.session.flush()
+        return job
+
+    async def confirm_payment(self, job_id: int) -> Optional[JobRequest]:
+        """Admin to'lovni tasdiqladi."""
+        job = await self.get_by_id(job_id)
+        if job:
+            job.payment_status = PaymentStatus.PAID.value
+            await self.session.flush()
+        return job
+
+    async def reject_payment(self, job_id: int) -> Optional[JobRequest]:
+        """Admin to'lovni rad etdi."""
+        job = await self.get_by_id(job_id)
+        if job:
+            job.payment_status = PaymentStatus.CANCELLED.value
+            job.status = JobStatus.REJECTED.value
+            await self.session.flush()
+        return job
+
+    async def get_paid_unfilled_job(self, user_id: int) -> Optional[JobRequest]:
+        """To'langan lekin hali ma'lumot kiritilmagan jobni topish."""
+        stmt = (
+            select(JobRequest)
+            .where(
+                JobRequest.user_id == user_id,
+                JobRequest.payment_status == PaymentStatus.PAID.value,
+                JobRequest.status == JobStatus.DRAFT.value,
+            )
+            .order_by(desc(JobRequest.created_at))
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def update_with_vacancy_data(
+        self,
+        job_id: int,
+        category_id: Optional[int],
+        position: str,
+        company: str,
+        requirements: str,
+        salary: str,
+        contact: str,
+        location: Optional[str] = None,
+        work_schedule: Optional[str] = None,
+        telegram_user: Optional[str] = None,
+        post_text: Optional[str] = None,
+        image_path: Optional[str] = None,
+        status: str = JobStatus.PENDING.value,
+        expires_at=None,
+    ) -> Optional[JobRequest]:
+        """To'lov tasdiqlangach ma'lumotlarni to'ldirish."""
+        job = await self.get_by_id(job_id)
+        if not job:
+            return None
+        job.category_id = category_id
+        job.position = position
+        job.company = company
+        job.requirements = requirements
+        job.salary = salary
+        job.contact = contact
+        job.location = location
+        job.work_schedule = work_schedule
+        job.telegram_user = telegram_user
+        job.post_text = post_text
+        job.image_path = image_path
+        job.status = status
+        job.expires_at = expires_at
         await self.session.flush()
         return job
 
@@ -235,3 +334,4 @@ class ChannelRepository:
         stmt = select(Channel).where(Channel.is_active == True)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
