@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy import select
 from src.bot.config import settings, BASE_DIR
-from src.database.models import Base, Category, User, UserRole
+from src.database.models import Base, Category, User, UserRole, BotSetting
 
 # Baza papkasini yaratish (agar SQLite bo'lsa)
 if "sqlite" in settings.DATABASE_URL:
@@ -63,6 +63,25 @@ async def init_db():
     """Jadvallarni yaratish va standart kategoriyalarni initsializatsiya qilish."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+        # SQLite uchun yangi ustunlarni xavfsiz qo'shish (migration)
+        if "sqlite" in str(conn.engine.url):
+            from sqlalchemy import text
+            new_cols = [
+                ("request_type", "VARCHAR(20) DEFAULT 'job'"),
+                ("bio", "TEXT"),
+                ("experience", "VARCHAR(100)"),
+                ("tools", "VARCHAR(255)"),
+                ("portfolio", "VARCHAR(255)"),
+                ("receipt_image_path", "VARCHAR(500)"),
+                ("payment_amount", "INTEGER"),
+                ("payment_status", "VARCHAR(30) DEFAULT 'unpaid'"),
+            ]
+            for col_name, col_type in new_cols:
+                try:
+                    await conn.execute(text(f"ALTER TABLE job_requests ADD COLUMN {col_name} {col_type};"))
+                except Exception:
+                    pass  # Agar ustun allaqachon mavjud bo'lsa xatoni e'tiborsiz qoldirish
 
     async with get_session() as session:
         # Kategoriyalar borligini tekshirish
@@ -79,6 +98,19 @@ async def init_db():
                     is_active=True,
                 )
                 session.add(cat)
+
+        # Bot sozlamalari (to'lov, karta, narx) borligini tekshirish
+        setting_stmt = select(BotSetting)
+        setting_res = await session.execute(setting_stmt)
+        setting = setting_res.scalar_one_or_none()
+        if not setting:
+            default_setting = BotSetting(
+                price_per_post=25000,
+                card_number="8600 0000 0000 0000",
+                card_holder="Karta Egasi",
+                is_payment_enabled=True,
+            )
+            session.add(default_setting)
 
         # Superadminlarni ro'yxatdan o'tkazish/tekshirish
         for sa_id in settings.SUPERADMIN_IDS:

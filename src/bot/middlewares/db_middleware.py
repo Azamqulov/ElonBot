@@ -7,6 +7,7 @@ from src.database.repositories import (
     CategoryRepository,
     JobRequestRepository,
     ChannelRepository,
+    SettingsRepository,
 )
 
 
@@ -22,12 +23,14 @@ class DatabaseMiddleware(BaseMiddleware):
             cat_repo = CategoryRepository(session)
             job_repo = JobRequestRepository(session)
             chan_repo = ChannelRepository(session)
+            settings_repo = SettingsRepository(session)
 
             data["session"] = session
             data["user_repo"] = user_repo
             data["cat_repo"] = cat_repo
             data["job_repo"] = job_repo
             data["chan_repo"] = chan_repo
+            data["settings_repo"] = settings_repo
 
             # Foydalanuvchini bazadan olish yoki ro'yxatdan o'tkazish
             event_user: TgUser = data.get("event_from_user")

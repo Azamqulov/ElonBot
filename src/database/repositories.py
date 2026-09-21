@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 from sqlalchemy import select, update, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.database.models import User, Category, JobRequest, Channel, UserRole, JobStatus
+from src.database.models import User, Category, JobRequest, Channel, UserRole, JobStatus, BotSetting
 
 
 class UserRepository:
@@ -93,10 +93,19 @@ class JobRequestRepository:
         post_text: Optional[str] = None,
         image_path: Optional[str] = None,
         status: str = JobStatus.DRAFT.value,
+        request_type: str = "job",
+        bio: Optional[str] = None,
+        experience: Optional[str] = None,
+        tools: Optional[str] = None,
+        portfolio: Optional[str] = None,
+        receipt_image_path: Optional[str] = None,
+        payment_amount: Optional[int] = None,
+        payment_status: str = "unpaid",
     ) -> JobRequest:
         job = JobRequest(
             user_id=user_id,
             category_id=category_id,
+            request_type=request_type,
             position=position,
             company=company,
             requirements=requirements,
@@ -105,12 +114,38 @@ class JobRequestRepository:
             work_schedule=work_schedule,
             contact=contact,
             telegram_user=telegram_user,
+            bio=bio,
+            experience=experience,
+            tools=tools,
+            portfolio=portfolio,
             post_text=post_text,
             image_path=image_path,
+            receipt_image_path=receipt_image_path,
+            payment_amount=payment_amount,
+            payment_status=payment_status,
             status=status,
             created_at=datetime.utcnow(),
         )
         self.session.add(job)
+        await self.session.flush()
+        return job
+
+    async def update_payment(
+        self,
+        job_id: int,
+        receipt_image_path: Optional[str] = None,
+        payment_status: Optional[str] = None,
+        payment_amount: Optional[int] = None,
+    ) -> Optional[JobRequest]:
+        job = await self.get_by_id(job_id)
+        if not job:
+            return None
+        if receipt_image_path is not None:
+            job.receipt_image_path = receipt_image_path
+        if payment_status is not None:
+            job.payment_status = payment_status
+        if payment_amount is not None:
+            job.payment_amount = payment_amount
         await self.session.flush()
         return job
 
@@ -231,7 +266,65 @@ class ChannelRepository:
         await self.session.flush()
         return channel
 
+    async def remove_channel(self, channel_id: int) -> bool:
+        stmt = select(Channel).where(Channel.id == channel_id)
+        res = await self.session.execute(stmt)
+        channel = res.scalar_one_or_none()
+        if channel:
+            channel.is_active = False
+            await self.session.flush()
+            return True
+        return False
+
     async def get_all_active(self) -> List[Channel]:
-        stmt = select(Channel).where(Channel.is_active == True)
+        stmt = select(Channel).where(Channel.is_active == True).order_by(desc(Channel.id))
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+
+class SettingsRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_settings(self) -> BotSetting:
+        stmt = select(BotSetting).limit(1)
+        res = await self.session.execute(stmt)
+        setting = res.scalar_one_or_none()
+        if not setting:
+            setting = BotSetting(
+                price_per_post=25000,
+                card_number="8600 0000 0000 0000",
+                card_holder="Karta Egasi",
+                is_payment_enabled=True,
+            )
+            self.session.add(setting)
+            await self.session.flush()
+        return setting
+
+    async def update_price(self, price: int) -> BotSetting:
+        setting = await self.get_settings()
+        setting.price_per_post = price
+        setting.updated_at = datetime.utcnow()
+        await self.session.flush()
+        return setting
+
+    async def update_card_number(self, card_number: str) -> BotSetting:
+        setting = await self.get_settings()
+        setting.card_number = card_number
+        setting.updated_at = datetime.utcnow()
+        await self.session.flush()
+        return setting
+
+    async def update_card_holder(self, card_holder: str) -> BotSetting:
+        setting = await self.get_settings()
+        setting.card_holder = card_holder
+        setting.updated_at = datetime.utcnow()
+        await self.session.flush()
+        return setting
+
+    async def toggle_payment_enabled(self) -> BotSetting:
+        setting = await self.get_settings()
+        setting.is_payment_enabled = not setting.is_payment_enabled
+        setting.updated_at = datetime.utcnow()
+        await self.session.flush()
+        return setting

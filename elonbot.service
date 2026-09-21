@@ -1,0 +1,17 @@
+[Unit]
+Description=ElonBot Telegram Bot Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/ElonBot
+ExecStart=/home/ubuntu/ElonBot/venv/bin/python main.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=/home/ubuntu/ElonBot/.env
+
+[Install]
+WantedBy=multi-user.target

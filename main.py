@@ -12,13 +12,14 @@ if sys.platform == "win32":
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from src.bot.config import settings
 from src.database.connection import init_db
 from src.bot.middlewares.db_middleware import DatabaseMiddleware
-from src.bot.handlers import common, user_job, admin, superadmin
+from src.bot.handlers import common, user_job, user_resume, admin, superadmin
 
 # Logging sozlash
 logging.basicConfig(
@@ -56,12 +57,27 @@ async def main():
     # 4. Routerlarni ro'yxatdan o'tkazish
     dp.include_router(common.router)
     dp.include_router(user_job.router)
+    dp.include_router(user_resume.router)
     dp.include_router(admin.router)
     dp.include_router(superadmin.router)
 
     logger.info("Barcha routerlar va middleware'lar muvaffaqiyatli ulandi.")
 
-    # 5. Pollingni boshlash
+    # 5. Telegram Menu buyruqlarini ro'yxatdan o'tkazish
+    bot_commands = [
+        BotCommand(command="new", description="🆕 Yangi e'lon berish (Vakansiya / Rezyume)"),
+        BotCommand(command="my_requests", description="📋 Mening e'lonlarim"),
+        BotCommand(command="admin", description="🛡️ Admin paneli"),
+        BotCommand(command="help", description="ℹ️ Bot haqida va Support"),
+        BotCommand(command="cancel", description="❌ Jarayonni bekor qilish"),
+    ]
+    try:
+        await bot.set_my_commands(bot_commands)
+        logger.info("Bot komandalar menyusi muvaffaqiyatli sozlandi.")
+    except Exception as e:
+        logger.warning(f"Komandalar menyusini o'rnatishda xatolik: {e}")
+
+    # 6. Pollingni boshlash
     try:
         # Eski kutilmagan update'larni tozalash
         await bot.delete_webhook(drop_pending_updates=True)
