@@ -193,35 +193,51 @@ async def cb_admin_approve(
     await job_repo.update_status(job_id=job.id, status=JobStatus.APPROVED.value, reviewer_id=db_user.id)
     await job_repo.update_payment(job_id=job.id, payment_status="paid")
 
-    # Kanalga post qilish
+    # Barcha faol kanallarga post qilish
     channels = await chan_repo.get_all_active()
-    target_channel = settings.DEFAULT_CHANNEL_ID
-    if channels:
-        target_channel = channels[0].tg_channel_id
+
+    # Agar DB da kanal yo'q bo'lsa — .env dagi DEFAULT_CHANNEL_ID ga yuborish
+    if not channels:
+        target_channels = [settings.DEFAULT_CHANNEL_ID]
+    else:
+        target_channels = [ch.tg_channel_id for ch in channels]
 
     posted_successfully = False
-    try:
-        if job.image_path and os.path.exists(job.image_path):
-            if len(job.post_text) <= 1024:
-                await bot.send_photo(
-                    chat_id=target_channel,
-                    photo=FSInputFile(job.image_path),
-                    caption=job.post_text,
-                )
-            else:
-                await bot.send_photo(chat_id=target_channel, photo=FSInputFile(job.image_path))
-                await bot.send_message(chat_id=target_channel, text=job.post_text)
-        else:
-            await bot.send_message(chat_id=target_channel, text=job.post_text)
+    post_errors = []
 
-        posted_successfully = True
-        await job_repo.update_status(job_id=job.id, status=JobStatus.POSTED.value, reviewer_id=db_user.id)
-    except Exception as e:
-        # Kanalga yuborishda xatolik (masalan bot kanalda admin emas)
+    for target_channel in target_channels:
+        try:
+            if job.image_path and os.path.exists(job.image_path):
+                if len(job.post_text) <= 1024:
+                    await bot.send_photo(
+                        chat_id=target_channel,
+                        photo=FSInputFile(job.image_path),
+                        caption=job.post_text,
+                        parse_mode="HTML",
+                    )
+                else:
+                    await bot.send_photo(chat_id=target_channel, photo=FSInputFile(job.image_path))
+                    await bot.send_message(chat_id=target_channel, text=job.post_text, parse_mode="HTML")
+            else:
+                await bot.send_message(chat_id=target_channel, text=job.post_text, parse_mode="HTML")
+
+            posted_successfully = True
+        except Exception as e:
+            post_errors.append(f"❌ <b>{target_channel}</b>: {str(e)}")
+
+    if post_errors:
+        err_text = "\n".join(post_errors)
         await call.message.answer(
-            f"⚠️ <b>Kanalga post qilishda xatolik bo'ldi:</b> {str(e)}\n"
-            f"Bot {target_channel} kanalida admin ekanligini va post chiqarish huquqi borligini tekshiring."
+            f"⚠️ <b>Quyidagi kanallarga post qilishda xatolik:</b>\n{err_text}\n\n"
+            "📌 <b>Tekshiring:</b>\n"
+            "1. Bot kanalda <b>Admin</b> bo'lishi kerak\n"
+            "2. Botga <b>'Post xabarlar'</b> ruxsati berilishi kerak\n"
+            f"3. Kanal to'g'ri: <code>{', '.join(target_channels)}</code>",
+            parse_mode="HTML",
         )
+
+    if posted_successfully:
+        await job_repo.update_status(job_id=job.id, status=JobStatus.POSTED.value, reviewer_id=db_user.id)
 
     # Foydalanuvchiga bildirishnoma yuborish
     try:
